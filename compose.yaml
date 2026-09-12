@@ -1,0 +1,14 @@
+services:
+  miniflow:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      MINIFLOW_DB: /data/miniflow.db
+      MINIFLOW_WORKERS: 4
+    volumes:
+      - miniflow-data:/data
+    restart: unless-stopped
+
+volumes:
+  miniflow-data:
