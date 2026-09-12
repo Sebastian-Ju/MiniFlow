@@ -9,6 +9,10 @@ metrics in a browser dashboard.
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688)
 ![Tests](https://img.shields.io/badge/tests-pytest-0A9EDC)
 
+## Dashboard
+
+![MiniFlow dashboard showing a successfully completed task](docs/assets/dashboard.png)
+
 ## Why this is more than a CRUD app
 
 - **Atomic claiming:** `BEGIN IMMEDIATE` prevents two workers from executing the same queued job.
