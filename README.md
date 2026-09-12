@@ -135,6 +135,11 @@ The tests cover execution, scheduling, priority, cancellation, successful recove
 failure, exhausted retries, API validation, task lookup, topological execution, cycle rejection,
 and dependency-failure propagation.
 
+## Resume and interview preparation
+
+See [`docs/INTERVIEW_GUIDE.md`](docs/INTERVIEW_GUIDE.md) for resume bullets, project pitches,
+architecture talking points, common technical questions, and a live demo checklist.
+
 ## Roadmap
 
 - Server-sent live dashboard events
