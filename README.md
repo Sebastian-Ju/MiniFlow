@@ -19,6 +19,7 @@ metrics in a browser dashboard.
 - **Crash recovery:** running jobs have renewable leases; abandoned jobs return to the queue.
 - **Exponential backoff:** transient failures are retried with increasing delay.
 - **Priority and scheduling:** ready jobs are ordered by priority, then scheduled time.
+- **Dependency DAGs:** fan-out/fan-in workflows wait for prerequisites, reject cycles, and propagate failures.
 - **Safe dispatch:** workers execute registered functions only, never arbitrary code from API users.
 - **Observability:** statuses, errors, duration, attempts, success rate, and queue depth are visible.
 
@@ -58,6 +59,27 @@ The response contains a task ID. Use it to retrieve the execution result:
 curl http://127.0.0.1:8000/api/tasks/TASK_ID
 ```
 
+## Dependency workflows
+
+Submit a complete directed acyclic graph (DAG) in one request. Node keys are local to the
+request; MiniFlow validates the graph with Kahn's topological-sort algorithm, rejects missing
+dependencies and cycles, and converts the keys to durable task IDs.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/dags \
+  -H "Content-Type: application/json" \
+  -d '{"nodes":[
+    {"key":"ingest","name":"word_count","params":{"text":"reliable workflows"}},
+    {"key":"checksum","name":"sha256","params":{"text":"payload"},"depends_on":["ingest"]},
+    {"key":"score","name":"factorial","params":{"number":10},"depends_on":["ingest"]},
+    {"key":"join","name":"add","params":{"a":20,"b":22},"depends_on":["checksum","score"]}
+  ]}'
+```
+
+Root nodes enter the queue immediately. Descendants remain `blocked` until every parent succeeds.
+If a parent permanently fails or is cancelled, MiniFlow cancels its blocked descendants without
+executing them. The dashboard's **Queue demo DAG** button creates this fan-out/fan-in workflow.
+
 ## Registering application tasks
 
 MiniFlow's core can also be embedded in another Python application:
@@ -91,6 +113,8 @@ Browser / API client
         |
         v
  Worker pool ----> registered Python task ----> result / retry / failure
+
+ DAG scheduler: queued root -> blocked branches -> blocked join -> complete
 ```
 
 ## Reliability model
@@ -108,11 +132,11 @@ ruff check .
 ```
 
 The tests cover execution, scheduling, priority, cancellation, successful recovery from transient
-failure, exhausted retries, API validation, and task lookup.
+failure, exhausted retries, API validation, task lookup, topological execution, cycle rejection,
+and dependency-failure propagation.
 
 ## Roadmap
 
-- Task dependency DAGs
 - Server-sent live dashboard events
 - Dead-letter queue and replay
 - Separate API and worker processes

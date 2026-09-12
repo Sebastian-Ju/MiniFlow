@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
@@ -68,6 +68,14 @@ class SQLiteTaskStore:
                     ON tasks(status, available_at, priority DESC, created_at);
                 CREATE INDEX IF NOT EXISTS idx_tasks_created
                     ON tasks(created_at DESC);
+                CREATE TABLE IF NOT EXISTS task_dependencies (
+                    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                    depends_on_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+                    PRIMARY KEY (task_id, depends_on_id),
+                    CHECK (task_id != depends_on_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_task_dependencies_parent
+                    ON task_dependencies(depends_on_id);
                 """
             )
 
@@ -76,7 +84,7 @@ class SQLiteTaskStore:
         return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
 
     @staticmethod
-    def _row_to_record(row: sqlite3.Row) -> TaskRecord:
+    def _row_to_record(row: sqlite3.Row, depends_on: Sequence[str] = ()) -> TaskRecord:
         return TaskRecord(
             id=row["id"],
             name=row["name"],
@@ -93,7 +101,16 @@ class SQLiteTaskStore:
             result=json.loads(row["result_json"]) if row["result_json"] else None,
             error=row["error"],
             lease_expires_at=from_timestamp(row["lease_expires_at"]),
+            depends_on=tuple(depends_on),
         )
+
+    @staticmethod
+    def _dependency_ids(connection: sqlite3.Connection, task_id: str) -> list[str]:
+        rows = connection.execute(
+            "SELECT depends_on_id FROM task_dependencies WHERE task_id = ? ORDER BY depends_on_id",
+            (task_id,),
+        ).fetchall()
+        return [row["depends_on_id"] for row in rows]
 
     def enqueue(
         self,
@@ -103,6 +120,7 @@ class SQLiteTaskStore:
         priority: int = 50,
         max_retries: int = 3,
         delay_seconds: float = 0,
+        depends_on: Sequence[str] = (),
     ) -> TaskRecord:
         if not 0 <= priority <= 100:
             raise ValueError("priority must be between 0 and 100")
@@ -111,27 +129,56 @@ class SQLiteTaskStore:
         if not 0 <= delay_seconds <= 31_536_000:
             raise ValueError("delay_seconds must be between 0 and 31536000")
 
+        dependency_ids = list(dict.fromkeys(depends_on))
         now = utc_now()
         task_id = uuid4().hex
         available_at = now + timedelta(seconds=delay_seconds)
-        with self._connect() as connection:
+        with self._transaction(immediate=True) as connection:
+            if dependency_ids:
+                placeholders = ",".join("?" for _ in dependency_ids)
+                rows = connection.execute(
+                    f"SELECT id, status FROM tasks WHERE id IN ({placeholders})",
+                    dependency_ids,
+                ).fetchall()
+                statuses = {row["id"]: TaskStatus(row["status"]) for row in rows}
+                missing = [item for item in dependency_ids if item not in statuses]
+                if missing:
+                    raise ValueError(f"Unknown dependency task: {missing[0]}")
+                failed = [
+                    item
+                    for item, status in statuses.items()
+                    if status in {TaskStatus.FAILED, TaskStatus.CANCELLED}
+                ]
+                status = TaskStatus.CANCELLED if failed else TaskStatus.BLOCKED
+                error = f"Dependency {failed[0]} did not succeed" if failed else None
+                finished_at = now if failed else None
+            else:
+                status = TaskStatus.QUEUED
+                error = None
+                finished_at = None
             connection.execute(
                 """
                 INSERT INTO tasks (
                     id, name, params_json, status, priority, max_retries,
-                    created_at, available_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, available_at, error, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
                     name,
                     self._json(params),
-                    TaskStatus.QUEUED.value,
+                    status.value,
                     priority,
                     max_retries,
                     to_timestamp(now),
                     to_timestamp(available_at),
+                    error,
+                    to_timestamp(finished_at),
                 ),
+            )
+            connection.executemany(
+                "INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (?, ?)",
+                [(task_id, dependency_id) for dependency_id in dependency_ids],
             )
         record = self.get(task_id)
         assert record is not None
@@ -140,7 +187,8 @@ class SQLiteTaskStore:
     def get(self, task_id: str) -> TaskRecord | None:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-        return self._row_to_record(row) if row else None
+            dependencies = self._dependency_ids(connection, task_id) if row else []
+        return self._row_to_record(row, dependencies) if row else None
 
     def list(self, *, status: TaskStatus | None = None, limit: int = 50) -> list[TaskRecord]:
         limit = max(1, min(limit, 200))
@@ -153,12 +201,53 @@ class SQLiteTaskStore:
         params.append(limit)
         with self._connect() as connection:
             rows = connection.execute(query, params).fetchall()
-        return [self._row_to_record(row) for row in rows]
+            dependencies = {
+                row["id"]: self._dependency_ids(connection, row["id"]) for row in rows
+            }
+        return [self._row_to_record(row, dependencies[row["id"]]) for row in rows]
+
+    @staticmethod
+    def _resolve_blocked(connection: sqlite3.Connection, now: float) -> None:
+        connection.execute(
+            """
+            UPDATE tasks
+            SET status = ?, finished_at = ?, error = 'A dependency did not succeed'
+            WHERE status = ? AND EXISTS (
+                SELECT 1 FROM task_dependencies d
+                JOIN tasks parent ON parent.id = d.depends_on_id
+                WHERE d.task_id = tasks.id AND parent.status IN (?, ?)
+            )
+            """,
+            (
+                TaskStatus.CANCELLED.value,
+                now,
+                TaskStatus.BLOCKED.value,
+                TaskStatus.FAILED.value,
+                TaskStatus.CANCELLED.value,
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE tasks
+            SET status = ?
+            WHERE status = ? AND NOT EXISTS (
+                SELECT 1 FROM task_dependencies d
+                JOIN tasks parent ON parent.id = d.depends_on_id
+                WHERE d.task_id = tasks.id AND parent.status != ?
+            )
+            """,
+            (
+                TaskStatus.QUEUED.value,
+                TaskStatus.BLOCKED.value,
+                TaskStatus.SUCCEEDED.value,
+            ),
+        )
 
     def claim(self, worker_id: str, *, lease_seconds: float = 30) -> TaskRecord | None:
         now = utc_now()
         lease_expires = now + timedelta(seconds=lease_seconds)
         with self._transaction(immediate=True) as connection:
+            self._resolve_blocked(connection, to_timestamp(now))
             row = connection.execute(
                 """
                 SELECT id FROM tasks
@@ -274,12 +363,13 @@ class SQLiteTaskStore:
             cursor = connection.execute(
                 """
                 UPDATE tasks SET status = ?, finished_at = ?
-                WHERE id = ? AND status IN (?, ?)
+                WHERE id = ? AND status IN (?, ?, ?)
                 """,
                 (
                     TaskStatus.CANCELLED.value,
                     to_timestamp(utc_now()),
                     task_id,
+                    TaskStatus.BLOCKED.value,
                     TaskStatus.QUEUED.value,
                     TaskStatus.RETRYING.value,
                 ),

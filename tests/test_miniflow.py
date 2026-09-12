@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from miniflow import MiniFlow, TaskStatus
+from miniflow.dag import InvalidDAGError, topological_order
 
 
 def wait_for_terminal(flow: MiniFlow, task_id: str, timeout: float = 3):
@@ -115,3 +116,72 @@ def test_queued_task_can_be_cancelled(flow: MiniFlow):
 def test_unknown_task_is_rejected(flow: MiniFlow):
     with pytest.raises(LookupError, match="Unknown task"):
         flow.enqueue("does_not_exist")
+
+
+def test_dependency_dag_runs_in_topological_order(flow: MiniFlow):
+    execution_order: list[str] = []
+
+    @flow.task("record")
+    def record(value: str) -> str:
+        execution_order.append(value)
+        return value
+
+    records = flow.enqueue_dag(
+        [
+            {"key": "root", "name": "record", "params": {"value": "root"}},
+            {
+                "key": "left",
+                "name": "record",
+                "params": {"value": "left"},
+                "depends_on": ["root"],
+            },
+            {
+                "key": "right",
+                "name": "record",
+                "params": {"value": "right"},
+                "depends_on": ["root"],
+            },
+            {
+                "key": "join",
+                "name": "record",
+                "params": {"value": "join"},
+                "depends_on": ["left", "right"],
+            },
+        ]
+    )
+    assert records["join"].status == TaskStatus.BLOCKED
+    assert set(records["join"].depends_on) == {records["left"].id, records["right"].id}
+
+    flow.start_workers(2, poll_interval=0.005)
+    finished = wait_for_terminal(flow, records["join"].id)
+
+    assert finished.status == TaskStatus.SUCCEEDED
+    assert execution_order[0] == "root"
+    assert execution_order[-1] == "join"
+
+
+def test_failed_dependency_cancels_descendant(flow: MiniFlow):
+    @flow.task("fail")
+    def fail() -> None:
+        raise RuntimeError("upstream failed")
+
+    @flow.task("child")
+    def child() -> str:
+        return "should not run"
+
+    parent = flow.enqueue("fail", max_retries=0)
+    descendant = flow.enqueue("child", depends_on=[parent.id])
+    flow.start_workers(1, poll_interval=0.005, retry_base_seconds=0.01)
+    wait_for_terminal(flow, parent.id)
+
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and flow.get(descendant.id).status == TaskStatus.BLOCKED:
+        time.sleep(0.01)
+    cancelled = flow.get(descendant.id)
+    assert cancelled.status == TaskStatus.CANCELLED
+    assert cancelled.attempts == 0
+
+
+def test_topological_order_rejects_cycles():
+    with pytest.raises(InvalidDAGError, match="cycle"):
+        topological_order({"a": ["b"], "b": ["a"]})

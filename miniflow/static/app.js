@@ -26,6 +26,7 @@ async function loadMetrics() {
   const cards = [
     ["Total tasks", data.total],
     ["Running", data.by_status.running],
+    ["Blocked", data.by_status.blocked],
     ["Success rate", data.success_rate === null ? "—" : `${data.success_rate}%`],
     ["Avg duration", data.average_duration_ms === null ? "—" : `${data.average_duration_ms}ms`],
   ];
@@ -46,6 +47,7 @@ async function loadTasks() {
     <tr data-id="${escapeHtml(task.id)}">
       <td><span class="task-name">${escapeHtml(task.name)}</span><span class="task-id">${task.id.slice(0, 10)}</span></td>
       <td><span class="status ${task.status}">${task.status}</span></td>
+      <td>${task.depends_on.length}</td>
       <td>${task.priority}</td><td>${task.attempts}/${task.max_retries + 1}</td>
       <td>${task.duration_ms === null ? "—" : `${task.duration_ms} ms`}</td>
       <td>${new Date(task.created_at).toLocaleTimeString()}</td>
@@ -89,6 +91,24 @@ form.addEventListener("submit", async event => {
     message.textContent = `Queued ${data.id.slice(0, 12)}…`;
     await refresh();
   } catch (error) { message.textContent = error.message; }
+});
+
+document.querySelector("#demo-dag").addEventListener("click", async () => {
+  message.textContent = "";
+  const response = await fetch("/api/dags", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nodes: [
+      { key: "ingest", name: "word_count", params: { text: "MiniFlow schedules dependency graphs" } },
+      { key: "checksum", name: "sha256", params: { text: "validated payload" }, depends_on: ["ingest"] },
+      { key: "score", name: "factorial", params: { number: 12 }, depends_on: ["ingest"] },
+      { key: "finalize", name: "add", params: { a: 20, b: 22 }, depends_on: ["checksum", "score"] },
+    ] }),
+  });
+  const data = await response.json();
+  if (!response.ok) { message.textContent = data.detail || "DAG request failed"; return; }
+  message.textContent = `Queued DAG ${data.dag_id.slice(0, 12)}…`;
+  await refresh();
 });
 
 document.querySelector("#refresh").addEventListener("click", refresh);

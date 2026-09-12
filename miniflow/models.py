@@ -7,6 +7,7 @@ from typing import Any
 
 
 class TaskStatus(StrEnum):
+    BLOCKED = "blocked"
     QUEUED = "queued"
     RUNNING = "running"
     RETRYING = "retrying"
@@ -55,6 +56,7 @@ class TaskRecord:
     result: Any = None
     error: str | None = None
     lease_expires_at: datetime | None = None
+    depends_on: tuple[str, ...] = ()
 
     @property
     def duration_ms(self) -> float | None:
@@ -81,5 +83,6 @@ class TaskRecord:
             "lease_expires_at": (
                 self.lease_expires_at.isoformat() if self.lease_expires_at else None
             ),
+            "depends_on": list(self.depends_on),
             "duration_ms": self.duration_ms,
         }

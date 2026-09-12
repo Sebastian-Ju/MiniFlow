@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from .dag import topological_order
 from .models import TaskRecord, TaskStatus
 from .registry import TaskFunction, TaskRegistry
 from .storage import SQLiteTaskStore
@@ -29,6 +30,7 @@ class MiniFlow:
         priority: int = 50,
         max_retries: int = 3,
         delay_seconds: float = 0,
+        depends_on: Sequence[str] = (),
     ) -> TaskRecord:
         self.registry.get(name)
         return self.store.enqueue(
@@ -37,7 +39,32 @@ class MiniFlow:
             priority=priority,
             max_retries=max_retries,
             delay_seconds=delay_seconds,
+            depends_on=depends_on,
         )
+
+    def enqueue_dag(self, nodes: list[dict[str, Any]]) -> dict[str, TaskRecord]:
+        """Validate and enqueue a dependency graph, returning records by node key."""
+        by_key = {node["key"]: node for node in nodes}
+        if len(by_key) != len(nodes):
+            raise ValueError("DAG node keys must be unique")
+        graph = {key: node.get("depends_on", []) for key, node in by_key.items()}
+        order = topological_order(graph)
+
+        for node in nodes:
+            self.registry.get(node["name"])
+
+        records: dict[str, TaskRecord] = {}
+        for key in order:
+            node = by_key[key]
+            records[key] = self.enqueue(
+                node["name"],
+                node.get("params", {}),
+                priority=node.get("priority", 50),
+                max_retries=node.get("max_retries", 3),
+                delay_seconds=node.get("delay_seconds", 0),
+                depends_on=[records[parent].id for parent in graph[key]],
+            )
+        return records
 
     def start_workers(
         self,

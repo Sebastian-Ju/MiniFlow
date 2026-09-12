@@ -31,6 +31,7 @@
             <label>Delay (s)<input id="delay" type="number" min="0" value="0"></label>
           </div>
           <button type="submit">Queue task <span>→</span></button>
+          <button id="demo-dag" class="secondary" type="button">Queue demo DAG <span>◇</span></button>
           <p id="form-message" class="form-message"></p>
         </form>
       </aside>
@@ -42,7 +43,7 @@
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Task</th><th>Status</th><th>Priority</th><th>Attempts</th><th>Duration</th><th>Created</th></tr></thead>
+            <thead><tr><th>Task</th><th>Status</th><th>Deps</th><th>Priority</th><th>Attempts</th><th>Duration</th><th>Created</th></tr></thead>
             <tbody id="task-table"></tbody>
           </table>
           <div id="empty" class="empty">No executions yet. Queue your first task.</div>

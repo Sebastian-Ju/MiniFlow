@@ -4,6 +4,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -11,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .broker import MiniFlow
+from .dag import InvalidDAGError
 from .models import TaskStatus
 from .registry import UnknownTaskError
 from .tasks import register_builtin_tasks
@@ -22,6 +24,16 @@ class EnqueueRequest(BaseModel):
     priority: int = Field(default=50, ge=0, le=100)
     max_retries: int = Field(default=3, ge=0, le=10)
     delay_seconds: float = Field(default=0, ge=0, le=31_536_000)
+    depends_on: list[str] = Field(default_factory=list, max_length=50)
+
+
+class DAGNodeRequest(EnqueueRequest):
+    key: str = Field(min_length=1, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")
+    depends_on: list[str] = Field(default_factory=list, max_length=50)
+
+
+class DAGRequest(BaseModel):
+    nodes: list[DAGNodeRequest] = Field(min_length=1, max_length=50)
 
 
 def create_app(
@@ -44,7 +56,7 @@ def create_app(
 
     app = FastAPI(
         title="MiniFlow",
-        version="0.1.0",
+        version="0.2.0",
         description="A durable task queue with retries, scheduling and live observability.",
         lifespan=lifespan,
     )
@@ -74,10 +86,22 @@ def create_app(
                 priority=request.priority,
                 max_retries=request.max_retries,
                 delay_seconds=request.delay_seconds,
+                depends_on=request.depends_on,
             )
-        except UnknownTaskError as exc:
+        except (UnknownTaskError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return task.to_dict()
+
+    @app.post("/api/dags", status_code=202)
+    def enqueue_dag(request: DAGRequest) -> dict[str, Any]:
+        try:
+            records = flow.enqueue_dag([node.model_dump() for node in request.nodes])
+        except (InvalidDAGError, UnknownTaskError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "dag_id": uuid4().hex,
+            "nodes": {key: task.to_dict() for key, task in records.items()},
+        }
 
     @app.get("/api/tasks")
     def list_tasks(
@@ -99,7 +123,7 @@ def create_app(
         if task is None:
             raise HTTPException(status_code=404, detail="Task not found")
         if not flow.store.cancel(task_id):
-            raise HTTPException(status_code=409, detail="Only queued tasks can be cancelled")
+            raise HTTPException(status_code=409, detail="Only pending tasks can be cancelled")
         return {"id": task_id, "status": TaskStatus.CANCELLED.value}
 
     @app.get("/api/metrics")
