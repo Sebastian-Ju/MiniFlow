@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MiniFlow Control Plane</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">TASK INFRASTRUCTURE</p>
+        <h1>MiniFlow <span>Control Plane</span></h1>
+        <p class="subtitle">Durable execution, automatic retries, and queue visibility.</p>
+      </div>
+      <div class="live"><i></i> LIVE</div>
+    </header>
+
+    <section id="metrics" class="metrics"></section>
+
+    <section class="workspace">
+      <aside class="panel composer">
+        <div class="panel-title"><span>Enqueue task</span><small>POST /api/tasks</small></div>
+        <form id="task-form">
+          <label>Task type<select id="task-name"></select></label>
+          <label>Parameters (JSON)<textarea id="task-params" rows="7">{"a": 21, "b": 21}</textarea></label>
+          <div class="form-row">
+            <label>Priority<input id="priority" type="number" min="0" max="100" value="50"></label>
+            <label>Retries<input id="retries" type="number" min="0" max="10" value="3"></label>
+            <label>Delay (s)<input id="delay" type="number" min="0" value="0"></label>
+          </div>
+          <button type="submit">Queue task <span>→</span></button>
+          <p id="form-message" class="form-message"></p>
+        </form>
+      </aside>
+
+      <section class="panel queue">
+        <div class="panel-title">
+          <span>Recent executions</span>
+          <button id="refresh" class="ghost">Refresh</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Task</th><th>Status</th><th>Priority</th><th>Attempts</th><th>Duration</th><th>Created</th></tr></thead>
+            <tbody id="task-table"></tbody>
+          </table>
+          <div id="empty" class="empty">No executions yet. Queue your first task.</div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <dialog id="task-dialog">
+    <button id="close-dialog" class="dialog-close">×</button>
+    <p class="eyebrow">EXECUTION DETAIL</p>
+    <h2 id="dialog-title"></h2>
+    <pre id="dialog-content"></pre>
+  </dialog>
+  <script src="/static/app.js"></script>
+</body>
+</html>
